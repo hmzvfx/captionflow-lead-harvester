@@ -68,26 +68,36 @@ class AsyncHttpClient:
                 try:
                     await self._pace(url)
                     response = await self._client.get(url, params=params)
-                    if response.status_code == 429:
-                        self.metrics.http_429_count += 1
-                    if response.status_code == 429 or 500 <= response.status_code < 600:
-                        if attempt >= retries:
-                            response.raise_for_status()
-                        self.metrics.retry_count += 1
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            wait = float(retry_after) if retry_after else min(8.0, (2 ** attempt) + random.random())
-                        except ValueError:
-                            wait = min(8.0, (2 ** attempt) + random.random())
-                        await asyncio.sleep(wait)
-                        continue
-                    response.raise_for_status()
-                    return response
-                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     if attempt >= retries:
                         raise NetworkError(f"GET failed for {url}: {type(exc).__name__}") from exc
                     self.metrics.retry_count += 1
                     await asyncio.sleep(min(8.0, (2 ** attempt) + random.random()))
+                    continue
+
+                status = response.status_code
+                if status == 429:
+                    self.metrics.http_429_count += 1
+
+                # Retry only genuinely transient HTTP failures. Permanent 4xx responses
+                # such as 403/404 are expected during public-site discovery and must not
+                # be retried several times.
+                if status == 429 or 500 <= status < 600:
+                    if attempt >= retries:
+                        raise NetworkError(f"GET failed for {url}: HTTP {status}")
+                    self.metrics.retry_count += 1
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        wait = float(retry_after) if retry_after else min(8.0, (2 ** attempt) + random.random())
+                    except ValueError:
+                        wait = min(8.0, (2 ** attempt) + random.random())
+                    await asyncio.sleep(wait)
+                    continue
+
+                if status >= 400:
+                    raise NetworkError(f"GET failed for {url}: HTTP {status}")
+
+                return response
         raise NetworkError(f"GET failed for {url}")
 
     async def _robots_allowed(self, url: str) -> bool:
