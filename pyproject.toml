@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "captionflow-lead-harvester"
+version = "1.0.0"
+description = "Incremental, quota-aware public lead discovery for Captionflow"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "feedparser>=6.0,<7",
+  "google-api-python-client>=2.160,<3",
+  "google-auth>=2.38,<3",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<1"]
+
+[project.scripts]
+captionflow-harvester = "captionflow_harvester.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"

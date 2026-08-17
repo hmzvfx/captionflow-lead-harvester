@@ -1,0 +1,71 @@
+name: Captionflow Lead Harvest
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: captionflow-lead-harvest
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+      - name: Install
+        run: python -m pip install -U pip && pip install -e .
+      - name: Harvest public leads
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+          WORKER_COUNT: ${{ vars.WORKER_COUNT || '20' }}
+          TARGET_LANGUAGES: ${{ vars.TARGET_LANGUAGES || 'fr' }}
+          TARGET_COUNTRIES: ${{ vars.TARGET_COUNTRIES || 'BE,FR,CA,CH' }}
+          TARGET_NICHES: ${{ vars.TARGET_NICHES || 'business,fitness,marketing,coaching,real_estate,finance' }}
+          CREATOR_TYPES: ${{ vars.CREATOR_TYPES || 'coach,consultant,formateur,entrepreneur,creator,podcast' }}
+          MIN_SUBSCRIBERS: ${{ vars.MIN_SUBSCRIBERS || '500' }}
+          MAX_SUBSCRIBERS: ${{ vars.MAX_SUBSCRIBERS || '500000' }}
+          RECENT_DAYS: ${{ vars.RECENT_DAYS || '45' }}
+          MIN_SCORE: ${{ vars.MIN_SCORE || '55' }}
+          HOT_SCORE: ${{ vars.HOT_SCORE || '80' }}
+          GOOD_SCORE: ${{ vars.GOOD_SCORE || '65' }}
+          POSSIBLE_SCORE: ${{ vars.POSSIBLE_SCORE || '50' }}
+          TARGET_PROSPECTS_PER_RUN: ${{ vars.TARGET_PROSPECTS_PER_RUN || '500' }}
+          MAX_YOUTUBE_REQUESTS_PER_RUN: ${{ vars.MAX_YOUTUBE_REQUESTS_PER_RUN || '20' }}
+          MAX_YOUTUBE_SEARCH_REQUESTS_PER_RUN: ${{ vars.MAX_YOUTUBE_SEARCH_REQUESTS_PER_RUN || '3' }}
+          MAX_WEBSITES_PER_RUN: ${{ vars.MAX_WEBSITES_PER_RUN || '120' }}
+          MAX_PAGES_PER_DOMAIN: ${{ vars.MAX_PAGES_PER_DOMAIN || '5' }}
+          MAX_ENRICHMENTS_PER_RUN: ${{ vars.MAX_ENRICHMENTS_PER_RUN || '120' }}
+          MAX_RUNTIME_MINUTES: ${{ vars.MAX_RUNTIME_MINUTES || '40' }}
+          MAX_PAGE_BYTES: ${{ vars.MAX_PAGE_BYTES || '1500000' }}
+          HTTP_TIMEOUT_SECONDS: ${{ vars.HTTP_TIMEOUT_SECONDS || '12' }}
+          PER_HOST_DELAY_SECONDS: ${{ vars.PER_HOST_DELAY_SECONDS || '0.6' }}
+          PUBLIC_SEED_URLS: ${{ vars.PUBLIC_SEED_URLS }}
+          PUBLIC_FEED_URLS: ${{ vars.PUBLIC_FEED_URLS }}
+          PUBLIC_SITEMAP_URLS: ${{ vars.PUBLIC_SITEMAP_URLS }}
+          LLM_ENABLED: "false"
+        run: captionflow-harvester harvest
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captionflow-harvest-report-${{ github.run_id }}
+          path: reports/run_*.json
+          if-no-files-found: warn
+          retention-days: 14
