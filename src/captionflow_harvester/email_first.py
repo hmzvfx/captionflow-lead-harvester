@@ -127,8 +127,13 @@ def main() -> int:
         install_email_first_mode()
         report = asyncio.run(run_harvest(config))
         report["mode"] = "EMAIL_FIRST_VERIFIED_ONLY"
+        report["run_status"] = "SUCCESS_WITH_WARNINGS" if report.get("errors", 0) else "SUCCESS"
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("errors", 0) == 0 else 2
+
+        # run_harvest deliberately isolates recoverable provider/site failures so one
+        # blocked website, timeout or 429 does not discard a successful email harvest.
+        # Truly fatal failures still raise and are handled by the exception path below.
+        return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
