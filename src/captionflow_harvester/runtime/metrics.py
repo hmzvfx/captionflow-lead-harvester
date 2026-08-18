@@ -20,6 +20,8 @@ class RunMetrics:
     updated_leads: int = 0
     emails_found: int = 0
     verified_emails: int = 0
+    instagram_lookups: int = 0
+    instagram_found: int = 0
     duplicates_prevented: int = 0
     youtube_requests: int = 0
     youtube_search_requests: int = 0
