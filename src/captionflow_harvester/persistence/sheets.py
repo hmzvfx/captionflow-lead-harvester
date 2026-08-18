@@ -10,7 +10,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SHEETS = ["LEADS", "HOT LEADS", "NO EMAIL", "STATS", "SYSTEM_STATE"]
 HOT_HEADERS = ["Name", "Email", "Profile URL", "Website", "Niche", "Score", "Language", "Country", "Email Status", "Source"]
 NO_EMAIL_HEADERS = ["Name", "Profile URL", "Website", "Niche", "Score", "Language", "Country", "Source", "Why Qualified"]
-STATUS_VALUES = ["NEW", "REVIEWED", "CONTACTED", "INTERESTED", "CUSTOMER", "NOT_RELEVANT"]
+STATUS_VALUES = ["NEW", "REVIEWED", "CONTACTED", "REPLIED", "INTERESTED", "CUSTOMER", "NOT_RELEVANT"]
 
 
 def _column_letter(number: int) -> str:
@@ -30,6 +30,8 @@ def lead_to_row(lead: LeadRecord) -> list[Any]:
         lead.recent_activity, lead.content_type, lead.caption_opportunity, lead.captionflow_score,
         lead.classification, lead.why_qualified, lead.status,
         lead.instagram_url, lead.instagram_status, lead.instagram_search_query,
+        lead.outreach_status, lead.email_subject, lead.sent_at, lead.gmail_message_id,
+        lead.outreach_error, lead.outreach_attempts,
     ]
 
 
@@ -80,6 +82,10 @@ class SheetRepository:
             raise ValueError("GOOGLE_SPREADSHEET_ID is required")
         self.client = GoogleSheetsClient(spreadsheet_id, service=service)
 
+    @property
+    def leads_end_column(self) -> str:
+        return _column_letter(len(LEAD_HEADERS))
+
     def bootstrap(self) -> None:
         meta = self.client.metadata()
         existing = {s["properties"]["title"]: s["properties"] for s in meta.get("sheets", [])}
@@ -106,7 +112,6 @@ class SheetRepository:
             if actual == headers:
                 continue
 
-            # Non-destructive schema migration: LEADS may be an older valid prefix.
             if title == "LEADS" and actual == headers[: len(actual)] and len(actual) < len(headers):
                 start_col = _column_letter(len(actual) + 1)
                 self.client.values_update(f"'{title}'!{start_col}1", [headers[len(actual):]])
@@ -173,7 +178,8 @@ class SheetRepository:
             self.client.values_update("'SYSTEM_STATE'!A2", rows)
 
     def upsert_leads(self, leads: list[LeadRecord]) -> tuple[int, int, list[list[Any]]]:
-        existing_rows = self.client.values_get("'LEADS'!A2:Z")
+        leads_range = f"'LEADS'!A2:{self.leads_end_column}"
+        existing_rows = self.client.values_get(leads_range)
         by_id: dict[str, list[Any]] = {str(r[0]): list(r) for r in existing_rows if r and r[0]}
         new_count = 0
         updated_count = 0
@@ -182,19 +188,24 @@ class SheetRepository:
             existing = by_id.get(lead.lead_id)
             if existing:
                 existing_padded = existing + [""] * (len(LEAD_HEADERS) - len(existing))
-                row[1] = existing_padded[1] or row[1]  # preserve original discovery time
-                row[22] = existing_padded[22] or row[22]  # preserve manually managed sales status
+                row[1] = existing_padded[1] or row[1]
+                row[22] = existing_padded[22] or row[22]
                 if existing_padded[23] and not row[23]:
                     row[23] = existing_padded[23]
                     row[24] = existing_padded[24] or row[24]
                     row[25] = existing_padded[25] or row[25]
+                # Outreach is managed independently by the Gmail automation and must never
+                # be erased or reset by a discovery/enrichment harvest.
+                for index in range(26, len(LEAD_HEADERS)):
+                    if existing_padded[index] not in (None, ""):
+                        row[index] = existing_padded[index]
                 updated_count += 1
             else:
                 new_count += 1
             by_id[lead.lead_id] = row
         all_rows = list(by_id.values())
-        all_rows.sort(key=lambda r: str((r + [""] * 20)[1]), reverse=True)
-        self.client.values_clear("'LEADS'!A2:Z")
+        all_rows.sort(key=lambda r: str((r + [""] * len(LEAD_HEADERS))[1]), reverse=True)
+        self.client.values_clear(leads_range)
         if all_rows:
             self.client.values_update("'LEADS'!A2", all_rows)
         self.refresh_views(all_rows)
@@ -223,12 +234,14 @@ class SheetRepository:
         emails = sum(1 for r in padded if str(r[9]).strip())
         verified = sum(1 for r in padded if str(r[10]) == "VERIFIED_PUBLIC_SOURCE")
         instagram = sum(1 for r in padded if str(r[23]).strip())
+        contacted = sum(1 for r in padded if str(r[22]).upper() == "CONTACTED")
+        sent = sum(1 for r in padded if str(r[26]).upper() == "SENT")
         no_email = total - emails
         today = str(metrics.get("started_at", ""))[:10]
         new_today = sum(1 for r in padded if str(r[1])[:10] == today)
         rows: list[list[Any]] = [
             ["TOTAL LEADS", total], ["NEW TODAY", new_today], ["HOT LEADS", hot], ["EMAILS FOUND", emails],
-            ["VERIFIED EMAILS", verified], ["INSTAGRAM FOUND", instagram], ["NO EMAIL", no_email],
+            ["VERIFIED EMAILS", verified], ["INSTAGRAM FOUND", instagram], ["CONTACTED", contacted], ["OUTREACH SENT", sent], ["NO EMAIL", no_email],
             ["LAST RUN", metrics.get("finished_at", "")], ["LAST RUN DURATION", metrics.get("duration", 0)],
             ["LEADS DISCOVERED LAST RUN", metrics.get("candidates_found", 0)], ["NEW LEADS LAST RUN", metrics.get("new_leads", 0)],
             ["DUPLICATES PREVENTED", metrics.get("duplicates_prevented", 0)], ["WEBSITES CRAWLED", metrics.get("websites_crawled", 0)],
