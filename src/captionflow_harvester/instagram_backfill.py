@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 from .config import Config
 from .enrichment.instagram import find_instagram_from_email
-from .persistence.sheets import SheetRepository, SheetStateStore
+from .models import LEAD_HEADERS
+from .persistence.sheets import SheetRepository, SheetStateStore, _column_letter
 from .runtime.budget import RequestBudget
 from .runtime.metrics import RunMetrics
 from .runtime.network import AsyncHttpClient
@@ -38,8 +39,9 @@ async def run_backfill() -> dict:
     repository.bootstrap()
     state = SheetStateStore(repository)
     cache = dict(state.get("instagram_lookup_cache", {}) or {})
-    rows = repository.client.values_get("'LEADS'!A2:Z")
-    padded_rows = [list(row) + [""] * max(0, 26 - len(row)) for row in rows]
+    end_col = _column_letter(len(LEAD_HEADERS))
+    rows = repository.client.values_get(f"'LEADS'!A2:{end_col}")
+    padded_rows = [list(row) + [""] * max(0, len(LEAD_HEADERS) - len(row)) for row in rows]
 
     now = datetime.now(UTC)
     now_iso = now.replace(microsecond=0).isoformat()
@@ -95,8 +97,7 @@ async def run_backfill() -> dict:
                 "checked_at": now_iso,
             }
 
-    # Single non-destructive table rewrite after the current harvest job has finished.
-    repository.client.values_clear("'LEADS'!A2:Z")
+    repository.client.values_clear(f"'LEADS'!A2:{end_col}")
     if padded_rows:
         repository.client.values_update("'LEADS'!A2", padded_rows)
     repository.refresh_views(padded_rows)
