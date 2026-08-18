@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import asdict
 from typing import Any
 
 from ..models import LEAD_HEADERS, LeadRecord
@@ -14,6 +13,15 @@ NO_EMAIL_HEADERS = ["Name", "Profile URL", "Website", "Niche", "Score", "Languag
 STATUS_VALUES = ["NEW", "REVIEWED", "CONTACTED", "INTERESTED", "CUSTOMER", "NOT_RELEVANT"]
 
 
+def _column_letter(number: int) -> str:
+    result = ""
+    value = max(1, number)
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
 def lead_to_row(lead: LeadRecord) -> list[Any]:
     return [
         lead.lead_id, lead.discovered_at, lead.last_checked, lead.source, lead.name, lead.username,
@@ -21,6 +29,7 @@ def lead_to_row(lead: LeadRecord) -> list[Any]:
         lead.niche, lead.country, lead.language, lead.followers if lead.followers is not None else "",
         lead.recent_activity, lead.content_type, lead.caption_opportunity, lead.captionflow_score,
         lead.classification, lead.why_qualified, lead.status,
+        lead.instagram_url, lead.instagram_status, lead.instagram_search_query,
     ]
 
 
@@ -91,18 +100,28 @@ class SheetRepository:
             current = self.client.values_get(f"'{title}'!1:1")
             if not current or not any(str(x).strip() for x in current[0]):
                 self.client.values_update(f"'{title}'!A1", [headers])
-            else:
-                actual = [str(x) for x in current[0][: len(headers)]]
-                if actual != headers:
-                    raise RuntimeError(f"Sheet '{title}' exists with incompatible headers; no destructive reset was performed")
+                continue
+
+            actual = [str(x) for x in current[0]]
+            if actual == headers:
+                continue
+
+            # Non-destructive schema migration: LEADS may be an older valid prefix.
+            if title == "LEADS" and actual == headers[: len(actual)] and len(actual) < len(headers):
+                start_col = _column_letter(len(actual) + 1)
+                self.client.values_update(f"'{title}'!{start_col}1", [headers[len(actual):]])
+                continue
+
+            raise RuntimeError(f"Sheet '{title}' exists with incompatible headers; no destructive reset was performed")
 
         requests: list[dict] = []
         for title in ("LEADS", "HOT LEADS", "NO EMAIL", "STATS"):
             props = existing[title]
+            end_index = len(LEAD_HEADERS) if title == "LEADS" else 10
             requests.extend([
                 {"updateSheetProperties": {"properties": {"sheetId": props["sheetId"], "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}},
                 {"repeatCell": {"range": {"sheetId": props["sheetId"], "startRowIndex": 0, "endRowIndex": 1}, "cell": {"userEnteredFormat": {"backgroundColor": {"red": 0.08, "green": 0.09, "blue": 0.12}, "textFormat": {"foregroundColor": {"red": 1, "green": 1, "blue": 1}, "bold": True}}}, "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
-                {"autoResizeDimensions": {"dimensions": {"sheetId": props["sheetId"], "dimension": "COLUMNS", "startIndex": 0, "endIndex": 23 if title == "LEADS" else 10}}},
+                {"autoResizeDimensions": {"dimensions": {"sheetId": props["sheetId"], "dimension": "COLUMNS", "startIndex": 0, "endIndex": end_index}}},
             ])
         system_props = existing["SYSTEM_STATE"]
         requests.append({"updateSheetProperties": {"properties": {"sheetId": system_props["sheetId"], "hidden": True}, "fields": "hidden"}})
@@ -123,9 +142,9 @@ class SheetRepository:
         state = self.load_state()
         defaults = {
             "processed_queries": [], "query_cursors": {}, "channel_checked_at": {}, "website_checked_at": {},
-            "email_checked_at": {}, "processed_video_ids": [], "provider_state": {}, "failed_jobs": {},
-            "retry_queue": [], "dead_letter_queue": [], "youtube_query_offset": 0, "youtube_query_tokens": {},
-            "youtube_query_done_at": {}, "youtube_known_channel_ids": [],
+            "email_checked_at": {}, "instagram_lookup_cache": {}, "processed_video_ids": [], "provider_state": {},
+            "failed_jobs": {}, "retry_queue": [], "dead_letter_queue": [], "youtube_query_offset": 0,
+            "youtube_query_tokens": {}, "youtube_query_done_at": {}, "youtube_known_channel_ids": [],
         }
         changed = False
         for key, value in defaults.items():
@@ -154,7 +173,7 @@ class SheetRepository:
             self.client.values_update("'SYSTEM_STATE'!A2", rows)
 
     def upsert_leads(self, leads: list[LeadRecord]) -> tuple[int, int, list[list[Any]]]:
-        existing_rows = self.client.values_get("'LEADS'!A2:W")
+        existing_rows = self.client.values_get("'LEADS'!A2:Z")
         by_id: dict[str, list[Any]] = {str(r[0]): list(r) for r in existing_rows if r and r[0]}
         new_count = 0
         updated_count = 0
@@ -165,13 +184,17 @@ class SheetRepository:
                 existing_padded = existing + [""] * (len(LEAD_HEADERS) - len(existing))
                 row[1] = existing_padded[1] or row[1]  # preserve original discovery time
                 row[22] = existing_padded[22] or row[22]  # preserve manually managed sales status
+                if existing_padded[23] and not row[23]:
+                    row[23] = existing_padded[23]
+                    row[24] = existing_padded[24] or row[24]
+                    row[25] = existing_padded[25] or row[25]
                 updated_count += 1
             else:
                 new_count += 1
             by_id[lead.lead_id] = row
         all_rows = list(by_id.values())
         all_rows.sort(key=lambda r: str((r + [""] * 20)[1]), reverse=True)
-        self.client.values_clear("'LEADS'!A2:W")
+        self.client.values_clear("'LEADS'!A2:Z")
         if all_rows:
             self.client.values_update("'LEADS'!A2", all_rows)
         self.refresh_views(all_rows)
@@ -199,16 +222,19 @@ class SheetRepository:
         hot = sum(1 for r in padded if str(r[20]).upper() == "HOT")
         emails = sum(1 for r in padded if str(r[9]).strip())
         verified = sum(1 for r in padded if str(r[10]) == "VERIFIED_PUBLIC_SOURCE")
+        instagram = sum(1 for r in padded if str(r[23]).strip())
         no_email = total - emails
         today = str(metrics.get("started_at", ""))[:10]
         new_today = sum(1 for r in padded if str(r[1])[:10] == today)
         rows: list[list[Any]] = [
             ["TOTAL LEADS", total], ["NEW TODAY", new_today], ["HOT LEADS", hot], ["EMAILS FOUND", emails],
-            ["VERIFIED EMAILS", verified], ["NO EMAIL", no_email], ["LAST RUN", metrics.get("finished_at", "")],
-            ["LAST RUN DURATION", metrics.get("duration", 0)], ["LEADS DISCOVERED LAST RUN", metrics.get("candidates_found", 0)],
-            ["NEW LEADS LAST RUN", metrics.get("new_leads", 0)], ["DUPLICATES PREVENTED", metrics.get("duplicates_prevented", 0)],
-            ["WEBSITES CRAWLED", metrics.get("websites_crawled", 0)], ["YOUTUBE REQUESTS", metrics.get("youtube_requests", 0)],
-            ["YOUTUBE SEARCH REQUESTS", metrics.get("youtube_search_requests", 0)], ["ERRORS", metrics.get("errors", 0)],
+            ["VERIFIED EMAILS", verified], ["INSTAGRAM FOUND", instagram], ["NO EMAIL", no_email],
+            ["LAST RUN", metrics.get("finished_at", "")], ["LAST RUN DURATION", metrics.get("duration", 0)],
+            ["LEADS DISCOVERED LAST RUN", metrics.get("candidates_found", 0)], ["NEW LEADS LAST RUN", metrics.get("new_leads", 0)],
+            ["DUPLICATES PREVENTED", metrics.get("duplicates_prevented", 0)], ["WEBSITES CRAWLED", metrics.get("websites_crawled", 0)],
+            ["YOUTUBE REQUESTS", metrics.get("youtube_requests", 0)], ["YOUTUBE SEARCH REQUESTS", metrics.get("youtube_search_requests", 0)],
+            ["INSTAGRAM LOOKUPS", metrics.get("instagram_lookups", 0)], ["INSTAGRAM FOUND LAST RUN", metrics.get("instagram_found", 0)],
+            ["ERRORS", metrics.get("errors", 0)],
         ]
         dimensions = [
             ("LEADS BY SOURCE", 3), ("LEADS BY NICHE", 12), ("LEADS BY LANGUAGE", 14), ("LEADS BY COUNTRY", 13),
