@@ -107,12 +107,15 @@ def test_google_sheet_row_mapping():
         email_source_url="https://creator.com/contact", niche="business", country="FR", language="fr",
         followers=1000, recent_activity="recent", content_type="talking_head", caption_opportunity="GOOD",
         captionflow_score=82, classification="HOT", why_qualified="content fit", status="NEW",
+        instagram_url="https://www.instagram.com/creator/", instagram_status="FOUND_SEARCH_RESULT",
+        instagram_search_query="hello creator instagram",
     )
     row = lead_to_row(lead)
-    assert len(row) == 23
+    assert len(row) == 26
     assert row[0] == "abc"
     assert row[9] == "hello@creator.com"
     assert row[19] == 82
+    assert row[23] == "https://www.instagram.com/creator/"
 
 
 def test_public_source_evidence():
