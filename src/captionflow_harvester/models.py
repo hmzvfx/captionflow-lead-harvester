@@ -82,6 +82,12 @@ class LeadRecord:
     instagram_url: str = ""
     instagram_status: str = "NOT_CHECKED"
     instagram_search_query: str = ""
+    outreach_status: str = ""
+    email_subject: str = ""
+    sent_at: str = ""
+    gmail_message_id: str = ""
+    outreach_error: str = ""
+    outreach_attempts: int | str = ""
 
 
 LEAD_HEADERS = [
@@ -90,4 +96,5 @@ LEAD_HEADERS = [
     "Niche", "Country", "Language", "Followers/Subscribers", "Recent Activity", "Content Type",
     "Caption Opportunity", "Captionflow Score", "Classification", "Why Qualified", "Status",
     "Instagram URL", "Instagram Status", "Instagram Search Query",
+    "Outreach Status", "Email Subject", "Sent At", "Gmail Message ID", "Outreach Error", "Outreach Attempts",
 ]
