@@ -5,7 +5,8 @@ import json
 import sys
 
 from .config import Config
-from .persistence.sheets import SheetRepository
+from .models import LEAD_HEADERS
+from .persistence.sheets import SheetRepository, _column_letter
 from .pipeline import run_harvest
 from .providers.youtube import YOUTUBE_API, YouTubeProvider, _extract_links, _official_website
 from .runtime.logging import configure_logging
@@ -23,12 +24,7 @@ def _is_verified_email_lead(lead) -> bool:
 
 
 async def _youtube_discover_with_video_descriptions(self):
-    """Augment channel metadata with public descriptions from recently discovered videos.
-
-    The YouTube Data API exposes video descriptions publicly. They frequently contain
-    business emails, creator websites, booking pages and link hubs that are absent from
-    channel metadata returned by channels.list.
-    """
+    """Augment channel metadata with public descriptions from recently discovered videos."""
     candidates = await _ORIGINAL_YOUTUBE_DISCOVER(self)
     if not candidates:
         return candidates
@@ -70,8 +66,7 @@ async def _youtube_discover_with_video_descriptions(self):
             continue
 
         pieces = [candidate.raw_text or candidate.description or "", *extra_descriptions]
-        merged_text = "\n\n".join(piece for piece in pieces if piece)
-        candidate.raw_text = merged_text
+        candidate.raw_text = "\n\n".join(piece for piece in pieces if piece)
 
         links = list(candidate.raw_links)
         for description in extra_descriptions:
@@ -90,14 +85,10 @@ async def _youtube_discover_with_video_descriptions(self):
 
 
 def _email_only_upsert(self, leads):
-    """Keep LEADS strictly usable: verified public emails only.
-
-    It also removes legacy rows without a verified email from previous runs so the main
-    sheet cannot be polluted by YouTube accounts that have no usable contact address.
-    """
+    """Keep LEADS strictly usable: verified public emails only, while preserving outreach tracking."""
     verified_leads = [lead for lead in leads if _is_verified_email_lead(lead)]
-
-    existing_rows = self.client.values_get("'LEADS'!A2:Z")
+    end_col = _column_letter(len(LEAD_HEADERS))
+    existing_rows = self.client.values_get(f"'LEADS'!A2:{end_col}")
     verified_existing = [
         row
         for row in existing_rows
@@ -106,7 +97,7 @@ def _email_only_upsert(self, leads):
         and str(row[10]).strip() == "VERIFIED_PUBLIC_SOURCE"
     ]
     if len(verified_existing) != len(existing_rows):
-        self.client.values_clear("'LEADS'!A2:Z")
+        self.client.values_clear(f"'LEADS'!A2:{end_col}")
         if verified_existing:
             self.client.values_update("'LEADS'!A2", verified_existing)
 
@@ -129,10 +120,6 @@ def main() -> int:
         report["mode"] = "EMAIL_FIRST_VERIFIED_ONLY"
         report["run_status"] = "SUCCESS_WITH_WARNINGS" if report.get("errors", 0) else "SUCCESS"
         print(json.dumps(report, ensure_ascii=False, indent=2))
-
-        # run_harvest deliberately isolates recoverable provider/site failures so one
-        # blocked website, timeout or 429 does not discard a successful email harvest.
-        # Truly fatal failures still raise and are handled by the exception path below.
         return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
