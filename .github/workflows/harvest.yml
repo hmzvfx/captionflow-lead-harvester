@@ -61,6 +61,16 @@ jobs:
           PUBLIC_SITEMAP_URLS: ${{ vars.PUBLIC_SITEMAP_URLS }}
           LLM_ENABLED: "false"
         run: python -m captionflow_harvester.email_first
+      - name: Backfill Instagram links from email identities
+        continue-on-error: true
+        env:
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+          WORKER_COUNT: ${{ vars.WORKER_COUNT || '20' }}
+          MAX_INSTAGRAM_BACKFILL_PER_RUN: ${{ vars.MAX_INSTAGRAM_BACKFILL_PER_RUN || '100' }}
+          MAX_PAGE_BYTES: ${{ vars.MAX_PAGE_BYTES || '1500000' }}
+          HTTP_TIMEOUT_SECONDS: ${{ vars.HTTP_TIMEOUT_SECONDS || '12' }}
+          PER_HOST_DELAY_SECONDS: ${{ vars.PER_HOST_DELAY_SECONDS || '0.6' }}
+        run: python -m captionflow_harvester.instagram_backfill
       - name: Upload run report
         if: always()
         uses: actions/upload-artifact@v4
