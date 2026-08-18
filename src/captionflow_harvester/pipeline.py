@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .config import Config
 from .discovery.deduplication import deduplicate_candidates, stable_lead_id
 from .enrichment.email import email_preference_score, extract_public_emails
 from .enrichment.evidence import public_email_evidence
+from .enrichment.instagram import find_instagram_from_email
 from .enrichment.website import WebsiteEnricher
 from .models import LeadRecord, UNKNOWN, utc_now_iso
 from .persistence.sheets import SheetRepository, SheetStateStore
@@ -49,6 +50,21 @@ def _state_failure(state: StateStore, key: str, error: str) -> None:
         if key not in retry:
             retry.append(key)
         state.set("retry_queue", retry[-1000:])
+
+
+def _instagram_cache_is_fresh(entry: dict, now: datetime) -> bool:
+    if not entry:
+        return False
+    if entry.get("url"):
+        return True
+    checked = str(entry.get("checked_at", ""))
+    try:
+        checked_at = datetime.fromisoformat(checked)
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=UTC)
+        return now - checked_at <= timedelta(days=7)
+    except (TypeError, ValueError):
+        return False
 
 
 async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> dict:
@@ -105,8 +121,10 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
             metrics.duplicates_prevented += duplicates
 
             now = utc_now_iso()
+            now_dt = datetime.now(UTC)
             website_checked = dict(state.get("website_checked_at", {}) or {})
             email_checked = dict(state.get("email_checked_at", {}) or {})
+            instagram_cache = dict(state.get("instagram_lookup_cache", {}) or {})
             channel_checked = dict(state.get("channel_checked_at", {}) or {})
             processed_video_ids = set(state.get("processed_video_ids", []) or [])
             enricher = WebsiteEnricher(config, http, budget, metrics)
@@ -134,11 +152,41 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
                         _state_failure(state, f"website:{candidate.website}", type(exc).__name__)
 
                 best = max(evidences, key=lambda e: (email_preference_score(e.email), e.confidence), default=None)
+                instagram_url = ""
+                instagram_status = "NOT_CHECKED"
+                instagram_search_query = ""
+
                 if best:
                     metrics.emails_found += 1
                     if best.verification_status == "VERIFIED_PUBLIC_SOURCE":
                         metrics.verified_emails += 1
                     email_checked[best.email] = now
+
+                    cached = instagram_cache.get(best.email, {})
+                    if _instagram_cache_is_fresh(cached, now_dt):
+                        instagram_url = str(cached.get("url", ""))
+                        instagram_status = str(cached.get("status", "NOT_FOUND"))
+                        instagram_search_query = str(cached.get("query", ""))
+                    else:
+                        metrics.instagram_lookups += 1
+                        lookup = await find_instagram_from_email(
+                            http,
+                            email=best.email,
+                            lead_name=candidate.name or "",
+                            lead_username=candidate.username or "",
+                        )
+                        instagram_url = lookup.url
+                        instagram_status = lookup.status
+                        instagram_search_query = lookup.query
+                        if instagram_url:
+                            metrics.instagram_found += 1
+                        instagram_cache[best.email] = {
+                            "url": instagram_url,
+                            "status": instagram_status,
+                            "query": instagram_search_query,
+                            "confidence": lookup.confidence,
+                            "checked_at": now,
+                        }
 
                 if candidate.source == "YOUTUBE" and candidate.provider_id:
                     channel_checked[candidate.provider_id] = now
@@ -168,9 +216,13 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
                     captionflow_score=result.score,
                     classification=result.classification,
                     why_qualified=result.why_qualified,
+                    instagram_url=instagram_url,
+                    instagram_status=instagram_status,
+                    instagram_search_query=instagram_search_query,
                 )
 
             semaphore = asyncio.Semaphore(max(1, config.worker_count))
+
             async def guarded(candidate):
                 async with semaphore:
                     try:
@@ -187,6 +239,7 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
 
             state.set("website_checked_at", website_checked)
             state.set("email_checked_at", email_checked)
+            state.set("instagram_lookup_cache", instagram_cache)
             state.set("channel_checked_at", channel_checked)
             state.set("processed_video_ids", sorted(processed_video_ids)[-10000:])
             state.set("processed_queries", list(dict.fromkeys((state.get("processed_queries", []) or []) + metrics.queries))[-2000:])
@@ -212,6 +265,7 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
         report["ratios"] = {
             "qualified_per_youtube_search": round(metrics.qualified / max(1, metrics.youtube_search_requests), 3),
             "verified_emails_per_website": round(metrics.verified_emails / max(1, metrics.websites_crawled), 3),
+            "instagram_found_per_lookup": round(metrics.instagram_found / max(1, metrics.instagram_lookups), 3),
         }
         report_path = Path(report_dir)
         report_path.mkdir(parents=True, exist_ok=True)
@@ -222,7 +276,7 @@ async def run_harvest(config: Config, *, report_dir: str | Path = "reports") -> 
             pass
         if sheet_repo:
             try:
-                rows = sheet_repo.client.values_get("'LEADS'!A2:W")
+                rows = sheet_repo.client.values_get("'LEADS'!A2:Z")
                 sheet_repo.update_stats(rows, report)
             except Exception as exc:
                 log.warning("stats update failed: %s", exc)
