@@ -79,6 +79,9 @@ class LeadRecord:
     classification: str
     why_qualified: str
     status: str = "NEW"
+    instagram_url: str = ""
+    instagram_status: str = "NOT_CHECKED"
+    instagram_search_query: str = ""
 
 
 LEAD_HEADERS = [
@@ -86,4 +89,5 @@ LEAD_HEADERS = [
     "Platform", "Profile URL", "Website", "Email", "Email Status", "Email Source URL",
     "Niche", "Country", "Language", "Followers/Subscribers", "Recent Activity", "Content Type",
     "Caption Opportunity", "Captionflow Score", "Classification", "Why Qualified", "Status",
+    "Instagram URL", "Instagram Status", "Instagram Search Query",
 ]
