@@ -108,14 +108,19 @@ def test_google_sheet_row_mapping():
         followers=1000, recent_activity="recent", content_type="talking_head", caption_opportunity="GOOD",
         captionflow_score=82, classification="HOT", why_qualified="content fit", status="NEW",
         instagram_url="https://www.instagram.com/creator/", instagram_status="FOUND_SEARCH_RESULT",
-        instagram_search_query="hello creator instagram",
+        instagram_search_query="hello creator instagram", outreach_status="SENT",
+        email_subject="Je vous sous-titre une vidéo gratuitement", sent_at="2026-08-18T15:00:00+02:00",
+        gmail_message_id="gmail-123", outreach_attempts=1,
     )
     row = lead_to_row(lead)
-    assert len(row) == 26
+    assert len(row) == 32
     assert row[0] == "abc"
     assert row[9] == "hello@creator.com"
     assert row[19] == 82
     assert row[23] == "https://www.instagram.com/creator/"
+    assert row[26] == "SENT"
+    assert row[29] == "gmail-123"
+    assert row[31] == 1
 
 
 def test_public_source_evidence():
