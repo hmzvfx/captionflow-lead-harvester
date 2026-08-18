@@ -97,7 +97,7 @@ def _email_only_upsert(self, leads):
     """
     verified_leads = [lead for lead in leads if _is_verified_email_lead(lead)]
 
-    existing_rows = self.client.values_get("'LEADS'!A2:W")
+    existing_rows = self.client.values_get("'LEADS'!A2:Z")
     verified_existing = [
         row
         for row in existing_rows
@@ -106,7 +106,7 @@ def _email_only_upsert(self, leads):
         and str(row[10]).strip() == "VERIFIED_PUBLIC_SOURCE"
     ]
     if len(verified_existing) != len(existing_rows):
-        self.client.values_clear("'LEADS'!A2:W")
+        self.client.values_clear("'LEADS'!A2:Z")
         if verified_existing:
             self.client.values_update("'LEADS'!A2", verified_existing)
 
